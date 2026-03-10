@@ -2,6 +2,7 @@ const Ride = require('../models/Ride');
 const Driver = require('../models/Driver');
 const Payment = require('../models/Payment');
 const { calculateFare,calculateArrival, generateOTP } = require('../config/fareConfig');
+const { applyCoupon } = require('./couponController');
 
 // ─── ESTIMATE FARE ─────────────────────────────────────────
 const estimateFare = async (req, res) => {
@@ -47,21 +48,16 @@ const estimateFare = async (req, res) => {
 };
 
 // ─── BOOK RIDE ─────────────────────────────────────────────
+// Inside bookRide(), update fare calculation:
 const bookRide = async (req, res) => {
   try {
     const {
-      pickupAddress,
-      pickupLat,
-      pickupLng,
-      dropoffAddress,
-      dropoffLat,
-      dropoffLng,
-      cabType,
-      distanceKm,
-      durationMin
+      pickupAddress, pickupLat, pickupLng,
+      dropoffAddress, dropoffLat, dropoffLng,
+      cabType, distanceKm, durationMin,
+      couponCode  // ← NEW
     } = req.body;
 
-    // Validate fields
     if (!pickupAddress || !dropoffAddress || !cabType) {
       return res.status(400).json({
         success: false,
@@ -69,51 +65,51 @@ const bookRide = async (req, res) => {
       });
     }
 
-    // Calculate fare
-    const estimatedFare = calculateFare(
-      cabType,
-      distanceKm || 5,
-      durationMin || 15
-    );
+    let estimatedFare = calculateFare(cabType, distanceKm || 5, durationMin || 15);
+    let discountAmount = 0;
+    let appliedCoupon  = null;
 
-    // Generate OTP
+    // ── Apply coupon if provided ──────────────────────
+    if (couponCode) {
+      const Coupon = require('../models/Coupon');
+      const coupon = await Coupon.findOne({
+        code: couponCode.toUpperCase(),
+        isActive: true
+      });
+      if (coupon && coupon.usedCount < coupon.usageLimit) {
+        discountAmount = Math.min(
+          Math.round((estimatedFare * coupon.discount) / 100),
+          coupon.maxDiscount
+        );
+        estimatedFare  = Math.max(estimatedFare - discountAmount, 0);
+        appliedCoupon  = coupon.code;
+        await applyCoupon(couponCode);
+      }
+    }
+
     const otp = generateOTP();
 
-    // Find available driver (nearest - simplified)
     const availableDriver = await Driver.findOne({
       isAvailable: true,
-      isVerified: true,
+      isVerified:  true,
       'vehicle.type': cabType
     });
 
-    // Create ride
     const ride = await Ride.create({
       user: req.user.id,
       driver: availableDriver ? availableDriver._id : null,
-      pickup: {
-        address: pickupAddress,
-        lat: pickupLat || 0,
-        lng: pickupLng || 0
-      },
-      dropoff: {
-        address: dropoffAddress,
-        lat: dropoffLat || 0,
-        lng: dropoffLng || 0
-      },
+      pickup:  { address: pickupAddress,  lat: pickupLat  || 0, lng: pickupLng  || 0 },
+      dropoff: { address: dropoffAddress, lat: dropoffLat || 0, lng: dropoffLng || 0 },
       cabType,
       status: availableDriver ? 'accepted' : 'requested',
-      fare: { estimated: estimatedFare },
+      fare:   { estimated: estimatedFare },
       distance: distanceKm || 5,
       duration: durationMin || 15,
       otp
     });
 
-    // Mark driver as unavailable
     if (availableDriver) {
-      await Driver.findByIdAndUpdate(
-        availableDriver._id,
-        { isAvailable: false }
-      );
+      await Driver.findByIdAndUpdate(availableDriver._id, { isAvailable: false });
     }
 
     res.status(201).json({
@@ -123,31 +119,28 @@ const bookRide = async (req, res) => {
         : '🔍 Ride requested. Finding driver...',
       ride: {
         id: ride._id,
-        pickup: ride.pickup,
+        pickup:  ride.pickup,
         dropoff: ride.dropoff,
         cabType: ride.cabType,
-        status: ride.status,
+        status:  ride.status,
         estimatedFare,
+        discountAmount,   // ← NEW
+        appliedCoupon,    // ← NEW
         otp: ride.otp,
-        driver: availableDriver
-          ? {
-              name: availableDriver.name,
-              phone: availableDriver.phone,
-              vehicle: availableDriver.vehicle,
-              rating: availableDriver.rating
-            }
-          : null
+        driver: availableDriver ? {
+          name:    availableDriver.name,
+          phone:   availableDriver.phone,
+          vehicle: availableDriver.vehicle,
+          rating:  availableDriver.rating
+        } : null
       }
     });
 
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
+
 
 // ─── GET RIDE STATUS ───────────────────────────────────────
 const getRideStatus = async (req, res) => {
@@ -401,6 +394,129 @@ const rateRide = async (req, res) => {
   }
 };
 
+// ── GET PENDING RIDES (for driver) ───────────────────
+const getDriverPendingRides = async (req, res) => {
+  try {
+    const driver = await Driver.findById(req.user.id);
+    if (!driver)
+      return res.status(404).json({ success: false, message: 'Driver not found' });
+
+    // Find rides matching driver cab type that are still requested
+    const rides = await Ride.find({
+      status:  'requested',
+      cabType: driver.vehicle.type
+    }).populate('user', 'name phone').sort({ createdAt: -1 });
+
+    res.status(200).json({ success: true, rides });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── GET DRIVER ACTIVE RIDE ────────────────────────────
+const getDriverActiveRide = async (req, res) => {
+  try {
+    const ride = await Ride.findOne({
+      driver: req.user.id,
+      status: { $in: ['accepted', 'arriving', 'ongoing'] }
+    }).populate('user', 'name phone email');
+
+    res.status(200).json({ success: true, ride: ride || null });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── GET DRIVER RIDE HISTORY ───────────────────────────
+const getDriverRideHistory = async (req, res) => {
+  try {
+    const rides = await Ride.find({
+      driver: req.user.id,
+      status: { $in: ['completed', 'cancelled'] }
+    }).populate('user', 'name phone').sort({ createdAt: -1 });
+
+    const totalEarnings = rides
+      .filter(r => r.status === 'completed')
+      .reduce((sum, r) => sum + (r.fare.final || r.fare.estimated || 0), 0);
+
+    res.status(200).json({
+      success: true,
+      totalRides: rides.length,
+      totalEarnings,
+      rides
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── ACCEPT RIDE ───────────────────────────────────────
+const acceptRide = async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.id);
+    if (!ride)
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+
+    if (ride.status !== 'requested')
+      return res.status(400).json({ success: false, message: 'Ride is no longer available' });
+
+    // Assign driver to ride
+    ride.driver = req.user.id;
+    ride.status = 'accepted';
+    await ride.save();
+
+    // Mark driver as unavailable
+    await Driver.findByIdAndUpdate(req.user.id, { isAvailable: false });
+
+    const updatedRide = await Ride.findById(ride._id)
+      .populate('user', 'name phone email');
+
+    res.status(200).json({
+      success: true,
+      message: '✅ Ride accepted!',
+      ride: updatedRide
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── REJECT RIDE ───────────────────────────────────────
+const rejectRide = async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.id);
+    if (!ride)
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+
+    res.status(200).json({
+      success: true,
+      message: 'Ride rejected'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── TOGGLE DRIVER AVAILABILITY ────────────────────────
+const toggleAvailability = async (req, res) => {
+  try {
+    const driver = await Driver.findById(req.user.id);
+    if (!driver)
+      return res.status(404).json({ success: false, message: 'Driver not found' });
+
+    driver.isAvailable = !driver.isAvailable;
+    await driver.save();
+
+    res.status(200).json({
+      success: true,
+      message: driver.isAvailable ? '🟢 You are now Online' : '🔴 You are now Offline',
+      isAvailable: driver.isAvailable
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   estimateFare,
   bookRide,
@@ -408,5 +524,11 @@ module.exports = {
   updateRideStatus,
   cancelRide,
   getRideHistory,
-  rateRide
+  rateRide,
+  getDriverPendingRides,   // ← ADD
+  getDriverActiveRide,     // ← ADD
+  getDriverRideHistory,    // ← ADD
+  acceptRide,              // ← ADD
+  rejectRide,              // ← ADD
+  toggleAvailability,      // ← ADD
 };

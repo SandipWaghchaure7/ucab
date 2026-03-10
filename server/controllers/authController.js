@@ -208,51 +208,34 @@ const loginDriver = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Email and password are required' 
-      });
-    }
-
     const driver = await Driver.findOne({ email });
-    if (!driver) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid email or password' 
-      });
-    }
+    if (!driver)
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
     const isMatch = await bcrypt.compare(password, driver.password);
-    if (!isMatch) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid email or password' 
-      });
-    }
+    if (!isMatch)
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
     const token = generateToken(driver._id, 'driver');
 
     res.status(200).json({
       success: true,
-      message: 'Driver login successful',
       token,
       driver: {
-        id: driver._id,
-        name: driver.name,
-        email: driver.email,
-        vehicle: driver.vehicle,
-        isVerified: driver.isVerified,
-        isAvailable: driver.isAvailable
+        id:          driver._id,
+        name:        driver.name,
+        email:       driver.email,
+        phone:       driver.phone,
+        vehicle:     driver.vehicle,
+        isVerified:  driver.isVerified,
+        isAvailable: driver.isAvailable,
+        rating:      driver.rating,
+        totalRides:  driver.totalRides,
+        earnings:    driver.earnings,
       }
     });
-
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error', 
-      error: error.message 
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 

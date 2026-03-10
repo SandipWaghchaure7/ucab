@@ -12,6 +12,7 @@ const corsOptions = {
   origin: [
     'http://localhost:3000',
     'http://localhost:3001',
+    'http://localhost:3002',
     process.env.FRONTEND_URL || 'http://localhost:3000'
   ],
   credentials: true,
@@ -21,6 +22,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use('/api/coupons', require('./routes/couponRoutes'));
 
 // ── Request Logger (dev only) ─────────────────────────
 if (process.env.NODE_ENV !== 'production') {
@@ -43,6 +45,7 @@ const adminRoutes = require('./routes/adminRoutes');
 app.use('/api/admin', adminRoutes);
 app.use('/api/auth',  authRoutes);
 app.use('/api/rides', rideRoutes);
+app.use('/api/payments', require('./routes/paymentRoutes'));
 
 // ── Health Check ──────────────────────────────────────
 app.get('/', (req, res) => {

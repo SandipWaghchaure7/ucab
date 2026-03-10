@@ -10,6 +10,8 @@ import Home           from './pages/Home';
 import History        from './pages/History';
 import Profile        from './pages/Profile';
 import NotFound       from './pages/NotFound';
+import Payment from './pages/Payment';
+
 
 const PrivateRoute = ({ children }) => {
   const { user, loading } = useAuth();
@@ -28,6 +30,9 @@ function AppRoutes() {
     <>
       <Navbar />
       <Routes>
+        <Route path="/payment/:rideId" element={
+  <PrivateRoute><Payment /></PrivateRoute>
+} />
         {/* Public */}
         <Route path="/login" element={
           <PublicRoute><Login /></PublicRoute>
